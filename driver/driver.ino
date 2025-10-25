@@ -100,7 +100,6 @@ static void getPosition() {
   Serial.print((int)gx8); Serial.print(",");
   Serial.print((int)gy8); Serial.print(",");
   Serial.println((int)gz8);
-
 }
 
 
@@ -110,7 +109,7 @@ static void getPosition() {
  *
  * @param[in] evt Event coming from the Bluetooth stack
  *****************************************************************************/
-void sl_bt_on_event(sl_bt_msg_t *evt)
+void my_bt_on_event(sl_bt_msg_t *evt)
 {
   switch (SL_BT_MSG_ID(evt->header)) {
     // This event is received when the BLE device has successfully booted
@@ -119,7 +118,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       // Print a welcome message
       Serial.begin(115200);
       Serial.println();
-      Serial.println("Silicon Labs BLE health thermometer example");
+      Serial.println("Silicon Labs BLE");
       Serial.println("BLE stack booted");
       // Initialize the application specific GATT DB
       ble_initialize_gatt_db();
@@ -193,8 +192,8 @@ static void ble_start_advertising()
     // Set advertising interval to 100ms
     sc = sl_bt_advertiser_set_timing(
       advertising_set_handle,
-      500,   // minimum advertisement interval (milliseconds * 1.6)
-      500,   // maximum advertisement interval (milliseconds * 1.6)
+      1000,   // minimum advertisement interval (milliseconds * 1.6)
+      1000,   // maximum advertisement interval (milliseconds * 1.6)
       0,     // advertisement duration
       0);    // maximum number of advertisement events
     app_assert_status(sc);
@@ -225,13 +224,12 @@ static void ble_initialize_gatt_db()
   uint16_t gattdb_session_id;
   uint16_t service_handle;
   uint16_t device_name_characteristic_handle;
-  uint16_t temp_type_characteristic_handle;
 
-  // Create a new GATT database
+  // Create a new GATT database session
   sc = sl_bt_gattdb_new_session(&gattdb_session_id);
   app_assert_status(sc);
 
-  // Generic Access service
+  /**************** Generic Access Service (0x1800) ****************/
   const uint8_t generic_access_service_uuid[] = { 0x00, 0x18 };
   sc = sl_bt_gattdb_add_service(gattdb_session_id,
                                 sl_bt_gattdb_primary_service,
@@ -241,7 +239,7 @@ static void ble_initialize_gatt_db()
                                 &service_handle);
   app_assert_status(sc);
 
-  // Device Name characteristic
+  // Device Name characteristic (0x2A00)
   const sl_bt_uuid_16_t device_name_characteristic_uuid = { .data = { 0x00, 0x2A } };
   sc = sl_bt_gattdb_add_uuid16_characteristic(gattdb_session_id,
                                               service_handle,
@@ -259,54 +257,36 @@ static void ble_initialize_gatt_db()
   sc = sl_bt_gattdb_start_service(gattdb_session_id, service_handle);
   app_assert_status(sc);
 
-  // Health Thermometer service
-  const uint8_t thermometer_service_uuid[] = { 0x09, 0x18 };
+  /**************** Generic IMU Service (custom 0x1815) ****************/
+  const uint8_t generic_imu_service_uuid[] = { 0x15, 0x18 };
   sc = sl_bt_gattdb_add_service(gattdb_session_id,
                                 sl_bt_gattdb_primary_service,
                                 SL_BT_GATTDB_ADVERTISED_SERVICE,
-                                sizeof(thermometer_service_uuid),
-                                thermometer_service_uuid,
+                                sizeof(generic_imu_service_uuid),
+                                generic_imu_service_uuid,
                                 &service_handle);
   app_assert_status(sc);
 
-  // Temperature Measurement characteristic
-  const sl_bt_uuid_16_t temp_measurement_characteristic_uuid = { .data = { 0x1C, 0x2A } };
-  uint8_t temp_initial_value[5] = { 0, 0, 0, 0, 0 };
+  // Generic IMU Measurement characteristic (custom 0x2A58)
+  const sl_bt_uuid_16_t imu_measurement_uuid = { .data = { 0x58, 0x2A } };
+  uint8_t imu_initial_value[6] = { 0, 0, 0, 0, 0, 0 }; // 48-bit field
+
   sc = sl_bt_gattdb_add_uuid16_characteristic(gattdb_session_id,
                                               service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_INDICATE,
                                               0x00,
                                               0x00,
-                                              temp_measurement_characteristic_uuid,
+                                              imu_measurement_uuid,
                                               sl_bt_gattdb_fixed_length_value,
-                                              5,
-                                              5,
-                                              temp_initial_value,
+                                              sizeof(imu_initial_value),
+                                              sizeof(imu_initial_value),
+                                              imu_initial_value,
                                               &imu_characteristic_handle);
   app_assert_status(sc);
 
-  // Temperature Type characteristic
-  const sl_bt_uuid_16_t temp_type_characteristic_uuid = { .data = { 0x1D, 0x2A } };
-  // Temperature type: body (2)
-  uint8_t temp_type_initial_value = 2;
-  sc = sl_bt_gattdb_add_uuid16_characteristic(gattdb_session_id,
-                                              service_handle,
-                                              SL_BT_GATTDB_CHARACTERISTIC_READ,
-                                              0x00,
-                                              0x00,
-                                              temp_type_characteristic_uuid,
-                                              sl_bt_gattdb_fixed_length_value,
-                                              1,
-                                              1,
-                                              &temp_type_initial_value,
-                                              &temp_type_characteristic_handle);
-  app_assert_status(sc);
-
-  // Start the Health Thermometer service
+  // Start and commit
   sc = sl_bt_gattdb_start_service(gattdb_session_id, service_handle);
   app_assert_status(sc);
-
-  // Commit the GATT DB changes
   sc = sl_bt_gattdb_commit(gattdb_session_id);
   app_assert_status(sc);
 }
