@@ -1,0 +1,43 @@
+import asyncio, struct, time, numpy as np
+from bleak import BleakClient, BleakScanner
+import matplotlib.pyplot as plt
+SERVICE_UUID = "00001815-0000-1000-8000-00805f9b34fb"
+CHAR_UUID    = "00002a58-0000-1000-8000-00805f9b34fb"
+data_log = {"t": [], "ax": [], "ay": [], "az": [], "gx": [], "gy": [], "gz": [], "pitch": []}
+start_t = time.time()
+def handle_indication(_, data: bytearray):
+    t = time.time() - start_t
+    # interpret 6 unsigned bytes (0-255) back to signed centered at 128
+    vals = [int(x) - 128 for x in data]
+    ax, ay, az, gx, gy, gz = vals
+    print(f"[{t:5.2f}s] ax={ax:3d} ay={ay:3d} az={az:3d} | gx={gx:3d} gy={gy:3d} gz={gz:3d}")
+    data_log["t"].append(t)
+    data_log["ax"].append(ax)
+    data_log["ay"].append(ay)
+    data_log["az"].append(az)
+    data_log["gx"].append(gx)
+    data_log["gy"].append(gy)
+    data_log["gz"].append(gz)
+    if len(data_log["t"]) % 20 == 0:
+        plt.cla()
+        plt.plot(data_log["t"], data_log["ax"], label="ax")
+        plt.plot(data_log["t"], data_log["ay"], label="ay")
+        plt.plot(data_log["t"], data_log["az"], label="az")
+        plt.plot(data_log["t"], data_log["gx"], label="gx")
+        plt.plot(data_log["t"], data_log["gy"], label="gy")
+        plt.plot(data_log["t"], data_log["gz"], label="gz")
+        plt.legend(); plt.pause(0.3)
+async def main():
+    print("Scanning for XIAOMG24_BLE…")
+    device = await BleakScanner.find_device_by_name("XIAOMG24_BLE")
+    if not device:
+        print("Device not found.")
+        return
+    async with BleakClient(device) as client:
+        print("Connected!")
+        await client.start_notify(CHAR_UUID, handle_indication)
+        plt.ion(); plt.figure()
+        await asyncio.sleep(60)   # run for 60 s
+        await client.stop_notify(CHAR_UUID)
+    plt.ioff(); plt.show()
+asyncio.run(main())
