@@ -2,25 +2,22 @@
 #include <Wire.h>
 #define RF_SW_PW_PIN PB5
 #define RF_SW_PIN PB4
-
 static void getPosition();
 static void ble_initialize_gatt_db();
 static void ble_start_advertising();
-
 const uint8_t advertised_name[] = "XIAOMG24_BLE";
 uint8_t connection_handle = 0u;
 uint16_t imu_characteristic_handle = 0u;
 bool indication_enabled = false;
-
-
 //Create a instance of class LSM6DS3
 LSM6DS3 myIMU(I2C_MODE, 0x6A);    //I2C device address 0x6A
 float aX, aY, aZ, gX, gY, gZ;
 String result;
 const float accelerationThreshold = 2.5; // threshold of significant in G's
 const int numSamples = 119;
-int samplesRead = numSamples;
+const int buzzerPin = D1;  // XIAO MG24 Sense digital pin D1
 
+int samplesRead = numSamples;
 void setup()
 {
   Serial.begin(115200);
@@ -35,33 +32,28 @@ void setup()
   }
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LED_BUILTIN_INACTIVE);
-  
   // turn on this antenna function
-  pinMode(RF_SW_PW_PIN, OUTPUT);  
+  pinMode(RF_SW_PW_PIN, OUTPUT);
   digitalWrite(RF_SW_PW_PIN, HIGH);
-
   delay(100);
-
   // HIGH -> Use external antenna / LOW -> Use built-in antenna
-  pinMode(RF_SW_PIN, OUTPUT);  
+  pinMode(RF_SW_PIN, OUTPUT);
   digitalWrite(RF_SW_PIN, LOW);
-}
+  pinMode(buzzerPin, OUTPUT);
 
+}
 void loop()
 {
   getPosition();
 }
-
 /**************************************************************************//**
  * Sends a BLE indication with the current temperature to the connected device
  * if enabled, then waits for a second
  *****************************************************************************/
-  
 static void getPosition() {
   if (!indication_enabled) {
     return;
   }
-
   // --- Read and scale sensors ---
   uint8_t buffer[6];
   aX = int(myIMU.readFloatAccelX() * 100);
@@ -70,7 +62,6 @@ static void getPosition() {
   gX = int(myIMU.readFloatGyroX());
   gY = int(myIMU.readFloatGyroY());
   gZ = int(myIMU.readFloatGyroZ());
-
   // --- Truncate to 8-bit range (−128..127) ---
   uint8_t ax8 = (int8_t)constrain(aX, -128, 127) + 128;
   uint8_t ay8 = (int8_t)constrain(aY, -128, 127) + 128;
@@ -78,20 +69,16 @@ static void getPosition() {
   uint8_t gx8 = (int8_t)constrain(gX, -128, 127) + 128;
   uint8_t gy8 = (int8_t)constrain(gY, -128, 127) + 128;
   uint8_t gz8 = (int8_t)constrain(gZ, -128, 127) + 128;
-
-
   buffer[0] = ax8;
-  buffer[1] = ay8; 
-  buffer[2] = az8; 
+  buffer[1] = ay8;
+  buffer[2] = az8;
   buffer[3] = gx8;
   buffer[4] = gy8;
   buffer[5] = gz8;
-
   sl_bt_gatt_server_send_indication(connection_handle,
                                     imu_characteristic_handle,
                                     sizeof(buffer),
                                     buffer);
-
   // --- Debug output ---
   Serial.print("IMU TX: ");
   Serial.print((int)ax8); Serial.print(",");
@@ -100,16 +87,17 @@ static void getPosition() {
   Serial.print((int)gx8); Serial.print(",");
   Serial.print((int)gy8); Serial.print(",");
   Serial.println((int)gz8);
+  if (aZ  > 0.75) {
+    tone(buzzerPin, 1000);      // start tone at 1000 Hz
+  }
 }
-
-
 /**************************************************************************//**
  * Bluetooth stack event handler
  * Called when an event happens on BLE the stack
  *
  * @param[in] evt Event coming from the Bluetooth stack
  *****************************************************************************/
-void my_bt_on_event(sl_bt_msg_t *evt)
+void sl_bt_on_event(sl_bt_msg_t *evt)
 {
   switch (SL_BT_MSG_ID(evt->header)) {
     // This event is received when the BLE device has successfully booted
@@ -126,7 +114,6 @@ void my_bt_on_event(sl_bt_msg_t *evt)
       ble_start_advertising();
     }
     break;
-
     // This event is received when a BLE connection has been opened
     case sl_bt_evt_connection_opened_id:
       // Store the connection handle which will be needed for sending indications
@@ -134,7 +121,6 @@ void my_bt_on_event(sl_bt_msg_t *evt)
       Serial.println("Connection opened");
       digitalWrite(LED_BUILTIN, LED_BUILTIN_ACTIVE);
       break;
-
     // This event is received when a BLE connection has been closed
     case sl_bt_evt_connection_closed_id:
       // Reset stored values
@@ -145,7 +131,6 @@ void my_bt_on_event(sl_bt_msg_t *evt)
       // Restart the advertisement
       ble_start_advertising();
       break;
-
     // This event is received when a GATT characteristic status changes
     case sl_bt_evt_gatt_server_characteristic_status_id:
     {
@@ -165,7 +150,6 @@ void my_bt_on_event(sl_bt_msg_t *evt)
       }
     }
     break;
-
     // Default event handler
     default:
       Serial.print("BLE event: 0x");
@@ -173,7 +157,6 @@ void my_bt_on_event(sl_bt_msg_t *evt)
       break;
   }
 }
-
 /**************************************************************************//**
  * Starts BLE advertisement
  * Initializes advertising if it's called for the first time
@@ -183,12 +166,10 @@ static void ble_start_advertising()
   static uint8_t advertising_set_handle = 0xff;
   static bool init = true;
   sl_status_t sc;
-
   if (init) {
     // Create an advertising set
     sc = sl_bt_advertiser_create_set(&advertising_set_handle);
     app_assert_status(sc);
-
     // Set advertising interval to 100ms
     sc = sl_bt_advertiser_set_timing(
       advertising_set_handle,
@@ -197,23 +178,18 @@ static void ble_start_advertising()
       0,     // advertisement duration
       0);    // maximum number of advertisement events
     app_assert_status(sc);
-
     init = false;
   }
-
   // Generate data for advertising
   sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle, sl_bt_advertiser_general_discoverable);
   app_assert_status(sc);
-
   // Start advertising and enable connections
   sc = sl_bt_legacy_advertiser_start(advertising_set_handle, sl_bt_advertiser_connectable_scannable);
   app_assert_status(sc);
-
   Serial.print("Started advertising as '");
   Serial.print((const char*)advertised_name);
   Serial.println("'...");
 }
-
 /**************************************************************************//**
  * Initializes the GATT database
  * Creates a new GATT session and adds certain services and characteristics
@@ -224,11 +200,9 @@ static void ble_initialize_gatt_db()
   uint16_t gattdb_session_id;
   uint16_t service_handle;
   uint16_t device_name_characteristic_handle;
-
   // Create a new GATT database session
   sc = sl_bt_gattdb_new_session(&gattdb_session_id);
   app_assert_status(sc);
-
   /**************** Generic Access Service (0x1800) ****************/
   const uint8_t generic_access_service_uuid[] = { 0x00, 0x18 };
   sc = sl_bt_gattdb_add_service(gattdb_session_id,
@@ -238,7 +212,6 @@ static void ble_initialize_gatt_db()
                                 generic_access_service_uuid,
                                 &service_handle);
   app_assert_status(sc);
-
   // Device Name characteristic (0x2A00)
   const sl_bt_uuid_16_t device_name_characteristic_uuid = { .data = { 0x00, 0x2A } };
   sc = sl_bt_gattdb_add_uuid16_characteristic(gattdb_session_id,
@@ -253,10 +226,8 @@ static void ble_initialize_gatt_db()
                                               advertised_name,
                                               &device_name_characteristic_handle);
   app_assert_status(sc);
-
   sc = sl_bt_gattdb_start_service(gattdb_session_id, service_handle);
   app_assert_status(sc);
-
   /**************** Generic IMU Service (custom 0x1815) ****************/
   const uint8_t generic_imu_service_uuid[] = { 0x15, 0x18 };
   sc = sl_bt_gattdb_add_service(gattdb_session_id,
@@ -266,11 +237,9 @@ static void ble_initialize_gatt_db()
                                 generic_imu_service_uuid,
                                 &service_handle);
   app_assert_status(sc);
-
   // Generic IMU Measurement characteristic (custom 0x2A58)
   const sl_bt_uuid_16_t imu_measurement_uuid = { .data = { 0x58, 0x2A } };
   uint8_t imu_initial_value[6] = { 0, 0, 0, 0, 0, 0 }; // 48-bit field
-
   sc = sl_bt_gattdb_add_uuid16_characteristic(gattdb_session_id,
                                               service_handle,
                                               SL_BT_GATTDB_CHARACTERISTIC_INDICATE,
@@ -283,7 +252,6 @@ static void ble_initialize_gatt_db()
                                               imu_initial_value,
                                               &imu_characteristic_handle);
   app_assert_status(sc);
-
   // Start and commit
   sc = sl_bt_gattdb_start_service(gattdb_session_id, service_handle);
   app_assert_status(sc);
