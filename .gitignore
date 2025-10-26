@@ -3,3 +3,5 @@ driver/.vscode
 __pycache__/
 *.pyc
 ble_data.db
+.DS_Store
+Design Postura Mobile Dashboard (1)/.DS_Store
