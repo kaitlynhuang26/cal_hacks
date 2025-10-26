@@ -354,7 +354,10 @@ class MCPClient:
                 model=model,
                 messages=messages,
                 tools=openai_tools if openai_tools else None,
-                tool_choice="auto" if openai_tools else None,
+                # The API expects string values for tool_choice: 'auto', 'required', or 'none'.
+                # Passing a Python None serializes to null which the API rejects; send 'none' when
+                # no tools are present.
+                tool_choice=("auto" if openai_tools else "none"),
             )
 
             message = response.choices[0].message

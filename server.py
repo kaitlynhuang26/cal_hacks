@@ -1,9 +1,36 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, PlainTextResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from starlette.responses import PlainTextResponse
 from pydantic import BaseModel
 from typing import Optional
 import ble_service
+import mcp_client
+import uvicorn
+import os
+import time
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI(title="BLE data service")
+# Allow CORS for local frontend development so browser preflight (OPTIONS)
+# requests succeed. In production, narrow allow_origins appropriately.
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+        # Allow common local dev origins (e.g. Vite default 5173) and any
+        # localhost/127.0.0.1 port via regex. This is permissive for local
+        # development; narrow or remove for production.
+        allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+)
 
 
 class ControlRequest(BaseModel):
@@ -146,6 +173,27 @@ def db_description():
     return desc
 
 
+@app.get("/mcp/summary", response_class=PlainTextResponse)
+async def mcp_summary():
+    """Run the MCP client main() and return the string result.
+
+    This will invoke the async `main()` in `mcp_client.py`, which calls out to
+    Groq/OpenAI and the MCP server. Ensure the environment variable
+    `GROQ_API_KEY` is set in the server environment; otherwise the client will
+    return no result and this endpoint will return a 500 error with a helpful
+    message.
+    """
+    try:
+        result = await mcp_client.main()
+        if not result:
+            raise HTTPException(status_code=500, detail="MCP client did not return a summary. Ensure GROQ_API_KEY is set and MCP server is reachable.")
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/control/start")
 def control_start(req: ControlRequest):
     ble_service.start(req.device_name)
@@ -172,6 +220,7 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             sample = await q.get()
             await websocket.send_json(sample)
+            time.sleep(.01)
     except WebSocketDisconnect:
         # client disconnected
         await ble_service.unregister_listener(q)
@@ -180,3 +229,32 @@ async def websocket_endpoint(websocket: WebSocket):
         await ble_service.unregister_listener(q)
         raise
 
+class ChatRequest(BaseModel):
+    message: str
+
+
+@app.get("/api/chat")
+async def isaac():
+    """Simple GET helper so callers that accidentally GET the chat route
+    receive a helpful 'use POST' response instead of a generic 404/Not Found.
+    This also helps debugging from browsers/dev-servers that proxy incorrectly.
+    """
+    return {"message": "MEOWWW!!!"}
+
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    """Handle chat requests from the React Postura AI chatbot."""
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        raise HTTPException(status_code=500, detail="Missing GROQ_API_KEY environment variable.")
+
+    try:
+        chatbot = mcp_client.MCPChatGroq(groq_key, mcp_server_url="http://localhost:3000")
+        response_text = await chatbot.chat(req.message, model="llama-3.1-8b-instant")
+        return {"response": response_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat error: {e}")
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="localhost", port=8000)
