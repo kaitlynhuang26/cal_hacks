@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, PlainTextResponse
 from pydantic import BaseModel
 from typing import Optional
 import ble_service
@@ -109,6 +109,43 @@ def db_reset_straight_time():
     return {"status": "ok", "name": name}
 
 
+@app.get("/db/description", response_class=PlainTextResponse)
+def db_description():
+    """Return a human-readable description of slouch activity.
+
+    The description includes slouch_frequency (number of slouch events) and
+    a simple ratio/percentage breakdown of slouch_time vs straight_time.
+    """
+    if not ble_service.persistence_enabled():
+        raise HTTPException(status_code=400, detail="persistence disabled")
+
+    freq = ble_service.get_counter("slouch_frequency")
+    slouch_time = ble_service.get_counter("slouch_time")
+    straight_time = ble_service.get_counter("straight_time")
+
+    total = slouch_time + straight_time
+    if total > 0:
+        pct_slouch = round((slouch_time / total) * 100)
+        pct_straight = 100 - pct_slouch
+        # ratio in form X:Y (rounded)
+        try:
+            ratio = f"{round(slouch_time / max(1, straight_time), 2)}:1" if straight_time > 0 else "N/A"
+        except Exception:
+            ratio = "N/A"
+    else:
+        pct_slouch = pct_straight = 0
+        ratio = "N/A"
+
+    desc = (
+        f"Slouch frequency: {freq} occurrences. "
+        f"Time breakdown — Slouching: {slouch_time} ticks ({pct_slouch}%), "
+        f"Straight: {straight_time} ticks ({pct_straight}%). "
+        f"Ratio (slouch:straight): {ratio}."
+    )
+
+    return desc
+
+
 @app.post("/control/start")
 def control_start(req: ControlRequest):
     ble_service.start(req.device_name)
@@ -142,3 +179,4 @@ async def websocket_endpoint(websocket: WebSocket):
         # ensure we unregister on any other failure
         await ble_service.unregister_listener(q)
         raise
+

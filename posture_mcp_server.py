@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 from typing import Any, Dict, Optional
+import httpx
 
 app = FastAPI()
 
@@ -21,15 +22,20 @@ async def _send_mcp_request(_, method: str, params: Optional[Dict[str, Any]] = N
         }
 
     elif method == "tools/call":
-        # Return mock posture data
-        return {
-            "result": {
-                "avg_neck_angle": 18.4,
-                "slouch_time_minutes": 25,
-                "posture_score": 82,
-                "trend": "improving"
-            }
-        }
+        # Call the local FastAPI endpoint that returns the human-readable
+        # posture description and return it as the MCP call result. This
+        # allows the model (Groq Llama) to receive the summary text as a
+        # tool response.
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get("http://127.0.0.1:8000/db/description")
+            if resp.status_code == 200:
+                text = resp.text
+                return {"result": {"description": text}}
+            else:
+                return {"error": {"message": f"Upstream returned {resp.status_code}: {resp.text}"}}
+        except Exception as exc:
+            return {"error": {"message": f"Failed to call upstream description API: {exc}"}}
 
     elif method == "initialize":
         return {"result": {"status": "ok"}}
