@@ -31,9 +31,15 @@ export function RealTimePostureTracking() {
         const data = JSON.parse(event.data);
         const az = data.az || 0;
         
-        // Convert az value (0-128) to percentage (0-100)
-        // We'll invert the percentage because higher az means more slouching
-        const percentage = Math.max(0, Math.min(100, Math.round((1 - az / 128) * 100)));
+        // Convert az value (expected in range 60-128) to percentage (0-100)
+        // Mapping: 60 -> 100% (very straight), 128 -> 0% (fully slouched).
+        // Clamp out-of-range values to [0,100].
+        const percentage = (() => {
+          const raw = Number(isNaN(Number(az)) ? 0 : az);
+          if (raw <= 18) return 100;
+          if (raw >= 128) return 0;
+          return Math.round(((128 - raw) / (128 - 18)) * 100);
+        })();
         let status: PostureStatus;
         
         if (percentage >= 75) {
