@@ -14,7 +14,7 @@ async def _send_mcp_request(_, method: str, params: Optional[Dict[str, Any]] = N
                 "tools": [
                     {
                         "name": "get_posture_data",
-                        "description": "Mock tool for testing posture queries",
+                        "description": "This function gets a descriptive string for posture frequency and slouch percentage",
                         "inputSchema": {"type": "object", "properties": {}}
                     }
                 ]
@@ -27,6 +27,7 @@ async def _send_mcp_request(_, method: str, params: Optional[Dict[str, Any]] = N
         # allows the model (Groq Llama) to receive the summary text as a
         # tool response.
         try:
+            print('YAS')
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get("http://127.0.0.1:8000/db/description")
             if resp.status_code == 200:
@@ -45,13 +46,15 @@ async def _send_mcp_request(_, method: str, params: Optional[Dict[str, Any]] = N
 
 @app.post("/mcp")
 async def handle_mcp(request: Request):
+    print('watthefuck')
     body = await request.json()
     method = body.get("method")
     params = body.get("params")
     result = await _send_mcp_request(None, method, params)
+    print('server side', result)
     return JSONResponse(result)
 
 
 if __name__ == "__main__":
-    print(" Starting mock MCP posture server on http://localhost:3000/mcp ...")
-    uvicorn.run(app, host="0.0.0.0", port=3000)
+    print(" Starting mock MCP posture server on http://localhost:5000/mcp ...")
+    uvicorn.run(app, host="localhost", port=5000, log_level='debug')

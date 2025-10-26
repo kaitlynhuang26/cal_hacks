@@ -169,7 +169,7 @@ def db_description():
         f"Straight: {straight_time} ticks ({pct_straight}%). "
         f"Ratio (slouch:straight): {ratio}."
     )
-
+    print(desc)
     return desc
 
 
@@ -249,7 +249,7 @@ async def chat_endpoint(req: ChatRequest):
         raise HTTPException(status_code=500, detail="Missing GROQ_API_KEY environment variable.")
 
     try:
-        chatbot = mcp_client.MCPChatGroq(groq_key, mcp_server_url="http://localhost:3000")
+        chatbot = mcp_client.MCPChatGroq(groq_key, mcp_server_url="http://localhost:5000")
         response_text = await chatbot.chat(req.message, model="llama-3.1-8b-instant")
         return {"response": response_text}
     except Exception as e:
