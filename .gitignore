@@ -1,1 +1,5 @@
 .venv
+driver/.vscode
+__pycache__/
+*.pyc
+ble_data.db

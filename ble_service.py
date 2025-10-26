@@ -1,7 +1,12 @@
 import asyncio
 import os
+import sqlite3
+import threading
 import time
+from datetime import datetime, timedelta
 from typing import Dict, Any
+
+slouching = False
 
 # Import bleak lazily inside the runtime coroutine so the module can be imported
 # even when `bleak` is not installed (prevents import-time crash in the server).
@@ -10,16 +15,64 @@ SERVICE_UUID = "00001815-0000-1000-8000-00805f9b34fb"
 CHAR_UUID = "00002a58-0000-1000-8000-00805f9b34fb"
 
 # In-memory data log. Simple structure matching the original client.
-# By default do not persist samples to avoid storing large arrays in the API
-# server. Enable persistence by setting BLE_PERSIST_DATA=1 in the environment.
-PERSIST_DATA = os.environ.get("BLE_PERSIST_DATA", "0") == "1"
+# By default persist samples to a local SQLite DB. Set BLE_PERSIST_DATA=0 to
+# disable DB persistence (the service will still stream live samples).
+PERSIST_DATA = os.environ.get("BLE_PERSIST_DATA", "1") == "1"
 
+# In-memory data_log is kept for compatibility but DB is the primary store when
+# persistence is enabled.
 data_log = {"t": [], "ax": [], "ay": [], "az": [], "gx": [], "gy": [], "gz": [], "pitch": []}
-# Store the most recent sample for live access when persistence is disabled.
-last_sample: dict | None = None
+
+# SQLite DB configuration. Default DB file is ./ble_data.db but can be
+# overridden with BLE_DB_PATH environment variable.
+DB_PATH = os.environ.get("BLE_DB_PATH", "ble_data.db")
+_db_lock = threading.Lock()
+_db_conn: sqlite3.Connection | None = None
+
+
+def _open_db() -> sqlite3.Connection:
+    global _db_conn
+    if _db_conn is not None:
+        return _db_conn
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    with conn:
+        # Samples table stores raw sensor samples
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                t REAL,
+                ax INTEGER,
+                ay INTEGER,
+                az INTEGER,
+                gx INTEGER,
+                gy INTEGER,
+                gz INTEGER,
+                pitch REAL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        # Small key/value table to store counters like slouch_frequency
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS counters (
+                name TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+    _db_conn = conn
+    return _db_conn
+
+
 def persistence_enabled() -> bool:
     """Return True when persistent storage of samples is enabled."""
     return PERSIST_DATA
+
+# Store the most recent sample for live access.
+last_sample: dict | None = None
 start_t = time.time()
 
 # Internal control variables
@@ -53,23 +106,13 @@ def handle_indication(_: Any, data: bytearray) -> None:
 
     This mirrors the logic in the provided client script, but doesn't do plotting.
     """
+    global slouching
     t = time.time() - start_t
     vals = [int(x) - 128 for x in data]
     # If the BLE payload ever changes size, ignore malformed payloads.
     if len(vals) < 6:
         return
     ax, ay, az, gx, gy, gz = vals[:6]
-    # Append to persistent log only when enabled. Live streaming is
-    # dispatched to listeners regardless of persistence mode.
-    if PERSIST_DATA:
-        data_log["t"].append(t)
-        data_log["ax"].append(ax)
-        data_log["ay"].append(ay)
-        data_log["az"].append(az)
-        data_log["gx"].append(gx)
-        data_log["gy"].append(gy)
-        data_log["gz"].append(gz)
-
     # Prepare a lightweight sample payload for live streaming
     sample = {
         "t": t,
@@ -80,6 +123,31 @@ def handle_indication(_: Any, data: bytearray) -> None:
         "gy": gy,
         "gz": gz,
     }
+
+    if PERSIST_DATA:
+        try:
+            conn = _open_db()
+            with _db_lock:
+                # store the raw sample
+                conn.execute(
+                    "INSERT INTO samples (t, ax, ay, az, gx, gy, gz) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (t, ax, ay, az, gx, gy, gz),
+                )
+                # If we detect transition into slouching, increment counter atomically
+                if az > 64 and not slouching:
+                    slouching = True
+                    conn.execute(
+                        """
+                        INSERT INTO counters(name, value) VALUES ('slouch_frequency', 1)
+                        ON CONFLICT(name) DO UPDATE SET value = value + 1
+                        """
+                    )
+                elif az < 50 and slouching:
+                    slouching = False
+                conn.commit()
+        except Exception as exc:
+            print("Failed to write sample or update slouch frequency in DB:", exc)
+
 
     # Update the last seen sample (always keep this for live retrieval).
     global last_sample
@@ -94,7 +162,7 @@ def handle_indication(_: Any, data: bytearray) -> None:
             pass
 
 
-async def _run(device_name: str = "XIAOMG24_BLE") -> None:
+async def _run(device_name: str = "XIAOMG25_BLE") -> None:
     """Background coroutine that connects to BLE device and subscribes to notifications.
 
     Keeps reconnecting if device is not found or connection is lost until stop() is called.
@@ -127,17 +195,21 @@ async def _run(device_name: str = "XIAOMG24_BLE") -> None:
             gy += random.randint(-2, 2)
             gz += random.randint(-2, 2)
 
+            sample = {"t": t, "ax": ax, "ay": ay, "az": az, "gx": gx, "gy": gy, "gz": gz}
+
             # persist only when enabled
             if PERSIST_DATA:
-                data_log["t"].append(t)
-                data_log["ax"].append(ax)
-                data_log["ay"].append(ay)
-                data_log["az"].append(az)
-                data_log["gx"].append(gx)
-                data_log["gy"].append(gy)
-                data_log["gz"].append(gz)
+                try:
+                    conn = _open_db()
+                    with _db_lock:
+                        conn.execute(
+                            "INSERT INTO samples (t, ax, ay, az, gx, gy, gz) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (t, ax, ay, az, gx, gy, gz),
+                        )
+                        conn.commit()
+                except Exception as exc:
+                    print("Failed to write simulated sample to DB:", exc)
 
-            sample = {"t": t, "ax": ax, "ay": ay, "az": az, "gx": gx, "gy": gy, "gz": gz}
             # Update the last seen sample (always keep this for live retrieval).
             global last_sample
             last_sample = sample
@@ -170,7 +242,7 @@ async def _run(device_name: str = "XIAOMG24_BLE") -> None:
             await asyncio.sleep(1)
 
 
-def start(device_name: str = "XIAOMG24_BLE") -> None:
+def start(device_name: str = "XIAOMG25_BLE") -> None:
     """Start the BLE background task.
 
     If called from an existing asyncio event loop (e.g. when FastAPI runs), it schedules
@@ -210,20 +282,97 @@ def stop() -> None:
 
 def get_data() -> Dict[str, list]:
     """Return a copy of the recorded data (safe for JSON serialization)."""
+    # If persistence is enabled, read all samples from the DB and return as
+    # arrays. Otherwise return the in-memory `data_log` copies (may be empty).
+    if PERSIST_DATA:
+        try:
+            conn = _open_db()
+            cur = conn.execute("SELECT t, ax, ay, az, gx, gy, gz, pitch FROM samples ORDER BY id ASC")
+            rows = cur.fetchall()
+            out = {"t": [], "ax": [], "ay": [], "az": [], "gx": [], "gy": [], "gz": [], "pitch": []}
+            for r in rows:
+                out["t"].append(r["t"])
+                out["ax"].append(r["ax"])
+                out["ay"].append(r["ay"])
+                out["az"].append(r["az"])
+                out["gx"].append(r["gx"])
+                out["gy"].append(r["gy"])
+                out["gz"].append(r["gz"])
+                out["pitch"].append(r["pitch"])
+            return out
+        except Exception as exc:
+            print("Failed to read data from DB:", exc)
+            return {k: v[:] for k, v in data_log.items()}
+
     # Return shallow copies to avoid accidental mutation by consumers.
     return {k: v[:] for k, v in data_log.items()}
 
 
 def get_latest() -> dict:
     """Return the latest sample or an empty dict if none."""
-    # If we're persisting data, return the last entry from the stored log.
+    # If persistence is enabled, return the last DB sample.
     if PERSIST_DATA:
-        if not data_log["t"]:
+        try:
+            conn = _open_db()
+            cur = conn.execute(
+                "SELECT t, ax, ay, az, gx, gy, gz, pitch FROM samples ORDER BY id DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+            if row is None:
+                return {}
+            return {"t": row["t"], "ax": row["ax"], "ay": row["ay"], "az": row["az"], "gx": row["gx"], "gy": row["gy"], "gz": row["gz"], "pitch": row["pitch"]}
+        except Exception as exc:
+            print("Failed to read latest from DB:", exc)
+            # fallback to in-memory last_sample
+            if last_sample:
+                return last_sample
             return {}
-        idx = -1
-        return {k: (v[idx] if v else None) for k, v in data_log.items()}
 
     # When persistence is disabled, return the last live sample if available.
     if last_sample:
         return last_sample
     return {}
+
+
+def get_counter(name: str) -> int:
+    """Return the integer value for a named counter (0 if missing)."""
+    try:
+        conn = _open_db()
+        cur = conn.execute("SELECT value FROM counters WHERE name = ?", (name,))
+        row = cur.fetchone()
+        if row is None:
+            return 0
+        return int(row["value"])
+    except Exception as exc:
+        print("Failed to read counter from DB:", exc)
+        return 0
+
+
+def reset_counter(name: str) -> None:
+    """Reset (set to 0) the named counter, creating it if necessary."""
+    try:
+        conn = _open_db()
+        with _db_lock:
+            conn.execute(
+                "INSERT INTO counters(name, value) VALUES (?, 0) ON CONFLICT(name) DO UPDATE SET value = 0",
+                (name,),
+            )
+            conn.commit()
+    except Exception as exc:
+        print("Failed to reset counter in DB:", exc)
+
+
+def prune_samples(older_than_days: int) -> int:
+    """Delete samples older than `older_than_days`. Returns number of rows deleted."""
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        conn = _open_db()
+        with _db_lock:
+            cur = conn.execute("DELETE FROM samples WHERE created_at < ?", (cutoff_str,))
+            deleted = cur.rowcount
+            conn.commit()
+        return deleted
+    except Exception as exc:
+        print("Failed to prune samples from DB:", exc)
+        return 0

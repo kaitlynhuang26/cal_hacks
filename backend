@@ -5,7 +5,7 @@
 static void getPosition();
 static void ble_initialize_gatt_db();
 static void ble_start_advertising();
-const uint8_t advertised_name[] = "XIAOMG24_BLE";
+const uint8_t advertised_name[] = "XIAOMG25_BLE";
 uint8_t connection_handle = 0u;
 uint16_t imu_characteristic_handle = 0u;
 bool indication_enabled = false;
@@ -15,6 +15,8 @@ float aX, aY, aZ, gX, gY, gZ;
 String result;
 const float accelerationThreshold = 2.5; // threshold of significant in G's
 const int numSamples = 119;
+const int buzzerPin = D1;  // XIAO MG24 Sense digital pin D1
+
 int samplesRead = numSamples;
 void setup()
 {
@@ -37,6 +39,8 @@ void setup()
   // HIGH -> Use external antenna / LOW -> Use built-in antenna
   pinMode(RF_SW_PIN, OUTPUT);
   digitalWrite(RF_SW_PIN, LOW);
+  pinMode(buzzerPin, OUTPUT);
+
 }
 void loop()
 {
@@ -46,6 +50,8 @@ void loop()
  * Sends a BLE indication with the current temperature to the connected device
  * if enabled, then waits for a second
  *****************************************************************************/
+
+
 static void getPosition() {
   if (!indication_enabled) {
     return;
@@ -73,8 +79,8 @@ static void getPosition() {
   buffer[5] = gz8;
   sl_bt_gatt_server_send_indication(connection_handle,
                                     imu_characteristic_handle,
-                                    sizeof(buffer),
-                                    buffer);
+                                    sizeof(buffer), buffer);
+
   // --- Debug output ---
   Serial.print("IMU TX: ");
   Serial.print((int)ax8); Serial.print(",");
@@ -83,6 +89,12 @@ static void getPosition() {
   Serial.print((int)gx8); Serial.print(",");
   Serial.print((int)gy8); Serial.print(",");
   Serial.println((int)gz8);
+
+  if (az8 > 188) {
+    tone(buzzerPin, 1000);       // start tone at 1000 Hz
+  } else if (az8 < 165) {
+    noTone(buzzerPin);           // stop tone if below threshold
+  }
 }
 /**************************************************************************//**
  * Bluetooth stack event handler
@@ -92,6 +104,7 @@ static void getPosition() {
  *****************************************************************************/
 void sl_bt_on_event(sl_bt_msg_t *evt)
 {
+
   switch (SL_BT_MSG_ID(evt->header)) {
     // This event is received when the BLE device has successfully booted
     case sl_bt_evt_system_boot_id:
@@ -251,3 +264,12 @@ static void ble_initialize_gatt_db()
   sc = sl_bt_gattdb_commit(gattdb_session_id);
   app_assert_status(sc);
 }
+
+
+
+
+
+
+
+
+
