@@ -14,7 +14,7 @@ async def _send_mcp_request(_, method: str, params: Optional[Dict[str, Any]] = N
                 "tools": [
                     {
                         "name": "get_posture_data",
-                        "description": "This function gets a descriptive string for posture frequency and slouch percentage",
+                        "description": "This function gets a descriptive string for posture frequency and slouch percentage by date.",
                         "inputSchema": {"type": "object", "properties": {}}
                     }
                 ]

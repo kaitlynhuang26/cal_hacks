@@ -138,39 +138,95 @@ def db_reset_straight_time():
 
 @app.get("/db/description", response_class=PlainTextResponse)
 def db_description():
-    """Return a human-readable description of slouch activity.
+    """
+    Return a human-readable description of slouch activity.
 
-    The description includes slouch_frequency (number of slouch events) and
-    a simple ratio/percentage breakdown of slouch_time vs straight_time.
+    Uses the new date-based counters table.
+    Summarizes today's posture data and also provides
+    a total across the stored date range (up to 30 days). The biggest
     """
     if not ble_service.persistence_enabled():
         raise HTTPException(status_code=400, detail="persistence disabled")
 
-    freq = ble_service.get_counter("slouch_frequency")
-    slouch_time = ble_service.get_counter("slouch_time")
-    straight_time = ble_service.get_counter("straight_time")
+    try:
+        conn = ble_service._open_db()
+        cur = conn.execute("SELECT MIN(date), MAX(date) FROM counters")
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return "No posture data available yet."
 
-    total = slouch_time + straight_time
-    if total > 0:
-        pct_slouch = round((slouch_time / total) * 100)
-        pct_straight = 100 - pct_slouch
-        # ratio in form X:Y (rounded)
-        try:
-            ratio = f"{round(slouch_time / max(1, straight_time), 2)}:1" if straight_time > 0 else "N/A"
-        except Exception:
-            ratio = "N/A"
-    else:
-        pct_slouch = pct_straight = 0
-        ratio = "N/A"
+        start_date, end_date = row
+        today = time.strftime("%Y-%m-%d")
 
-    desc = (
-        f"Slouch frequency: {freq} occurrences. "
-        f"Time breakdown — Slouching: {slouch_time} ticks ({pct_slouch}%), "
-        f"Straight: {straight_time} ticks ({pct_straight}%). "
-        f"Ratio (slouch:straight): {ratio}."
-    )
-    print(desc)
-    return desc
+        # --- Retrieve today's counters ---
+        freq_today = ble_service.get_counter("slouch_frequency")
+        slouch_time_today = ble_service.get_counter("slouch_time")
+        straight_time_today = ble_service.get_counter("straight_time")
+        total_today = slouch_time_today + straight_time_today
+
+        # --- Retrieve overall sums (for range summary) ---
+        cur = conn.execute(
+            """
+            SELECT name, SUM(value) AS total
+            FROM counters
+            WHERE date BETWEEN ? AND ?
+            GROUP BY name
+            """,
+            (start_date, end_date),
+        )
+        totals = {row["name"]: row["total"] for row in cur.fetchall()}
+
+        freq_total = totals.get("slouch_frequency", 0)
+        slouch_time_total = totals.get("slouch_time", 0)
+        straight_time_total = totals.get("straight_time", 0)
+        total_all = slouch_time_total + straight_time_total
+
+        # --- Compute today's percentages ---
+        if total_today > 0:
+            pct_slouch_today = round((slouch_time_today / total_today) * 100)
+            pct_straight_today = 100 - pct_slouch_today
+            ratio_today = (
+                f"{round(slouch_time_today / max(1, straight_time_today), 2)}:1"
+                if straight_time_today > 0
+                else "N/A"
+            )
+        else:
+            pct_slouch_today = pct_straight_today = 0
+            ratio_today = "N/A"
+
+        # --- Compute totals percentages ---
+        if total_all > 0:
+            pct_slouch_all = round((slouch_time_total / total_all) * 100)
+            pct_straight_all = 100 - pct_slouch_all
+            ratio_all = (
+                f"{round(slouch_time_total / max(1, straight_time_total), 2)}:1"
+                if straight_time_total > 0
+                else "N/A"
+            )
+        else:
+            pct_slouch_all = pct_straight_all = 0
+            ratio_all = "N/A"
+
+        # --- Build text description ---
+        desc = (
+            f"📅 Posture Summary ({start_date} → {end_date})\n"
+            f"• Slouch frequency total: {freq_total} occurrences\n"
+            f"• Time breakdown — Slouching: {slouch_time_total} ticks ({pct_slouch_all}%), "
+            f"Straight: {straight_time_total} ticks ({pct_straight_all}%)\n"
+            f"• Ratio (slouch:straight): {ratio_all}\n\n"
+            f"🗓️ Today ({today}):\n"
+            f"• Slouch frequency: {freq_today} occurrences\n"
+            f"• Time breakdown — Slouching: {slouch_time_today} ticks ({pct_slouch_today}%), "
+            f"Straight: {straight_time_today} ticks ({pct_straight_today}%)\n"
+            f"• Ratio (slouch:straight): {ratio_today}\n"
+        )
+
+        print(desc)
+        return desc
+
+    except Exception as exc:
+        print("Failed to build description:", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/mcp/summary", response_class=PlainTextResponse)

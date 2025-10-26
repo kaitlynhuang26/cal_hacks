@@ -58,11 +58,14 @@ def _open_db() -> sqlite3.Connection:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS counters (
-                name TEXT PRIMARY KEY,
-                value INTEGER NOT NULL DEFAULT 0
+            name TEXT NOT NULL,
+            value INTEGER NOT NULL DEFAULT 0,
+            date TEXT NOT NULL DEFAULT (DATE('now', 'localtime')),
+            PRIMARY KEY (name, date)
             )
             """
         )
+        conn.commit()
     _db_conn = conn
     return _db_conn
 
@@ -134,31 +137,53 @@ def handle_indication(_: Any, data: bytearray) -> None:
                     (t, ax, ay, az, gx, gy, gz),
                 )
                 # If we detect transition into slouching, increment counter atomically
+                today = time.strftime("%Y-%m-%d")
+
+                # --- Slouching logic with per-day counters ---
                 if az > 64 and not slouching:
                     slouching = True
                     conn.execute(
                         """
-                        INSERT INTO counters(name, value) VALUES ('slouch_frequency', 1)
-                        ON CONFLICT(name) DO UPDATE SET value = value + 1
-                        """
+                        INSERT INTO counters(name, date, value)
+                        VALUES ('slouch_frequency', ?, 1)
+                        ON CONFLICT(name, date)
+                        DO UPDATE SET value = value + 1
+                        """,
+                        (today,),
                     )
                 elif az < 50 and slouching:
                     slouching = False
-                
+
+                # --- Time accumulation per posture state ---
                 if az > 64:
                     conn.execute(
                         """
-                        INSERT INTO counters(name, value) VALUES ('slouch_time', 1)
-                        ON CONFLICT(name) DO UPDATE SET value = value + 1
-                        """
+                        INSERT INTO counters(name, date, value)
+                        VALUES ('slouch_time', ?, 1)
+                        ON CONFLICT(name, date)
+                        DO UPDATE SET value = value + 1
+                        """,
+                        (today,),
                     )
                 else:
                     conn.execute(
                         """
-                        INSERT INTO counters(name, value) VALUES ('straight_time', 1)
-                        ON CONFLICT(name) DO UPDATE SET value = value + 1
-                        """
+                        INSERT INTO counters(name, date, value)
+                        VALUES ('straight_time', ?, 1)
+                        ON CONFLICT(name, date)
+                        DO UPDATE SET value = value + 1
+                        """,
+                        (today,),
                     )
+
+                # --- Optional cleanup: keep only last 30 days of data ---
+                conn.execute(
+                    """
+                    DELETE FROM counters
+                    WHERE date < DATE('now', '-30 day', 'localtime')
+                    """
+                )
+                    
                 conn.commit()
 
         except Exception as exc:
@@ -410,10 +435,14 @@ def get_latest() -> dict:
 
 
 def get_counter(name: str) -> int:
-    """Return the integer value for a named counter (0 if missing)."""
+    """Return today's integer value for a named counter (0 if missing)."""
+    today = time.strftime("%Y-%m-%d")
     try:
         conn = _open_db()
-        cur = conn.execute("SELECT value FROM counters WHERE name = ?", (name,))
+        cur = conn.execute(
+            "SELECT value FROM counters WHERE name = ? AND date = ?",
+            (name, today),
+        )
         row = cur.fetchone()
         if row is None:
             return 0
@@ -424,13 +453,19 @@ def get_counter(name: str) -> int:
 
 
 def reset_counter(name: str) -> None:
-    """Reset (set to 0) the named counter, creating it if necessary."""
+    """Reset today's counter (set to 0), creating a row for today if necessary."""
+    today = time.strftime("%Y-%m-%d")
     try:
         conn = _open_db()
         with _db_lock:
             conn.execute(
-                "INSERT INTO counters(name, value) VALUES (?, 0) ON CONFLICT(name) DO UPDATE SET value = 0",
-                (name,),
+                """
+                INSERT INTO counters(name, date, value)
+                VALUES (?, ?, 0)
+                ON CONFLICT(name, date)
+                DO UPDATE SET value = 0
+                """,
+                (name, today),
             )
             conn.commit()
     except Exception as exc:
