@@ -152,6 +152,9 @@ def handle_indication(_: Any, data: bytearray) -> None:
     # Update the last seen sample (always keep this for live retrieval).
     global last_sample
     last_sample = sample
+    # update last-seen timestamp for connection status
+    global _ble_last_seen
+    _ble_last_seen = time.time()
 
     # Dispatch to any registered asyncio listeners (non-blocking)
     for q in list(_listeners):
@@ -224,6 +227,8 @@ async def _run(device_name: str = "XIAOMG25_BLE") -> None:
             await asyncio.sleep(0.2)
         return
 
+    connect_attempt = 0
+
     while not _stop_event.is_set():
         device = await BleakScanner.find_device_by_name(device_name)
         if not device:
@@ -232,13 +237,67 @@ async def _run(device_name: str = "XIAOMG25_BLE") -> None:
             continue
 
         try:
+            connect_attempt += 1
+            dev_id = getattr(device, "address", None) or getattr(device, "name", None)
+            print(f"Attempting to connect to BLE device '{device_name}' (attempt {connect_attempt})... device={dev_id}")
+
+            # Connect and subscribe. Use a disconnected callback to detect
+            # unexpected disconnects and attempt immediate reconnects to the
+            # same device.
             async with BleakClient(device) as client:
+                # record device + connected state
+                global _ble_connected, _ble_device
+                _ble_device = getattr(device, "name", None) or getattr(device, "address", None)
+                _ble_connected = True
+
+                # set disconnected callback to notify event loop
+                disconnected = asyncio.Event()
+
+                def _on_disconnect(_: any):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.call_soon_threadsafe(disconnected.set)
+                    except Exception:
+                        pass
+
+                try:
+                    client.set_disconnected_callback(_on_disconnect)
+                except Exception:
+                    # Some bleak backends may not support set_disconnected_callback
+                    pass
+
                 await client.start_notify(CHAR_UUID, handle_indication)
-                # Wait until stop requested.
-                await _stop_event.wait()
-                await client.stop_notify(CHAR_UUID)
+
+                # Wait until either stop is requested or the device disconnects.
+                stop_task = asyncio.create_task(_stop_event.wait())
+                disc_task = asyncio.create_task(disconnected.wait())
+                done, pending = await asyncio.wait({stop_task, disc_task}, return_when=asyncio.FIRST_COMPLETED)
+
+                for p in pending:
+                    p.cancel()
+
+                # Always try to stop notify if still connected (best-effort)
+                try:
+                    await client.stop_notify(CHAR_UUID)
+                except Exception:
+                    pass
+
+                # If disconnected event fired, log and allow outer loop to reconnect
+                if disc_task in done:
+                    _ble_connected = False
+                    print(f"BLE device {device_name} disconnected; will attempt reconnect.")
+                    # small backoff before reconnecting
+                    await asyncio.sleep(1)
+                else:
+                    # stop was requested; mark disconnected and exit
+                    _ble_connected = False
+                    return
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:  # keep running on errors
             print("BLE client error:", exc)
+            _ble_connected = False
+            _ble_device = None
             await asyncio.sleep(1)
 
 
@@ -376,3 +435,37 @@ def prune_samples(older_than_days: int) -> int:
     except Exception as exc:
         print("Failed to prune samples from DB:", exc)
         return 0
+
+
+def query_samples(limit: int = 100, offset: int = 0, start_t: float | None = None, end_t: float | None = None) -> list:
+    """Query samples from the SQLite DB with optional time filtering.
+
+    Parameters:
+    - limit: maximum number of rows to return (default 100)
+    - offset: rows to skip for paging (default 0)
+    - start_t: include samples with t >= start_t when provided
+    - end_t: include samples with t <= end_t when provided
+
+    Returns a list of dict rows (keys: id, t, ax, ay, az, gx, gy, gz, pitch, created_at).
+    """
+    try:
+        conn = _open_db()
+        sql = "SELECT id, t, ax, ay, az, gx, gy, gz, pitch, created_at FROM samples"
+        params: list = []
+        clauses: list = []
+        if start_t is not None:
+            clauses.append("t >= ?")
+            params.append(start_t)
+        if end_t is not None:
+            clauses.append("t <= ?")
+            params.append(end_t)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur = conn.execute(sql, params)
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        print("Failed to query samples from DB:", exc)
+        return []
