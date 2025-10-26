@@ -71,6 +71,44 @@ def db_reset_slouch_counter():
     return {"status": "ok", "name": name}
 
 
+@app.get("/db/counters/slouch_time")
+def db_get_slouch_time():
+    """Return the 'slouch_time' counter value."""
+    if not ble_service.persistence_enabled():
+        raise HTTPException(status_code=400, detail="persistence disabled")
+    name = "slouch_time"
+    return {"name": name, "value": ble_service.get_counter(name)}
+
+
+@app.post("/db/counters/slouch_time/reset")
+def db_reset_slouch_time():
+    """Reset the 'slouch_time' counter to zero."""
+    if not ble_service.persistence_enabled():
+        raise HTTPException(status_code=400, detail="persistence disabled")
+    name = "slouch_time"
+    ble_service.reset_counter(name)
+    return {"status": "ok", "name": name}
+
+
+@app.get("/db/counters/straight_time")
+def db_get_straight_time():
+    """Return the 'straight_time' counter value."""
+    if not ble_service.persistence_enabled():
+        raise HTTPException(status_code=400, detail="persistence disabled")
+    name = "straight_time"
+    return {"name": name, "value": ble_service.get_counter(name)}
+
+
+@app.post("/db/counters/straight_time/reset")
+def db_reset_straight_time():
+    """Reset the 'straight_time' counter to zero."""
+    if not ble_service.persistence_enabled():
+        raise HTTPException(status_code=400, detail="persistence disabled")
+    name = "straight_time"
+    ble_service.reset_counter(name)
+    return {"status": "ok", "name": name}
+
+
 @app.post("/control/start")
 def control_start(req: ControlRequest):
     ble_service.start(req.device_name)

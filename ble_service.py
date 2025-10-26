@@ -144,7 +144,23 @@ def handle_indication(_: Any, data: bytearray) -> None:
                     )
                 elif az < 50 and slouching:
                     slouching = False
+                
+                if az > 64:
+                    conn.execute(
+                        """
+                        INSERT INTO counters(name, value) VALUES ('slouch_time', 1)
+                        ON CONFLICT(name) DO UPDATE SET value = value + 1
+                        """
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO counters(name, value) VALUES ('straight_time', 1)
+                        ON CONFLICT(name) DO UPDATE SET value = value + 1
+                        """
+                    )
                 conn.commit()
+
         except Exception as exc:
             print("Failed to write sample or update slouch frequency in DB:", exc)
 
