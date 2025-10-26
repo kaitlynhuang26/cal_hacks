@@ -217,7 +217,8 @@ from dataclasses import dataclass
 from enum import Enum
 import aiohttp
 from openai import AsyncOpenAI  # Groq uses OpenAI-compatible API
-
+from dotenv import load_dotenv
+load_dotenv()
 # ────────────────────────────────────────────────────────────────
 # ⚙️  CONFIGURATION
 # Set your Groq API key before running:

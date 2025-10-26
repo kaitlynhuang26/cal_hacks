@@ -1,4 +1,5 @@
 .venv
+.env
 driver/.vscode
 __pycache__/
 *.pyc
